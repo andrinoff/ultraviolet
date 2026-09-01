@@ -113,9 +113,35 @@ func (s *StyledString) Bounds() Rectangle {
 // somewhere the model cannot see, which is the drift a cell buffer exists to
 // keep out.
 func passThrough[T []byte | string](seq T) bool {
-	return ansi.HasApcPrefix(seq) || ansi.HasDcsPrefix(seq) ||
-		ansi.HasSosPrefix(seq) || ansi.HasPmPrefix(seq) ||
-		ansi.HasOscPrefix(seq)
+	if !ansi.HasApcPrefix(seq) && !ansi.HasDcsPrefix(seq) &&
+		!ansi.HasSosPrefix(seq) && !ansi.HasPmPrefix(seq) &&
+		!ansi.HasOscPrefix(seq) {
+		return false
+	}
+	return terminated(seq)
+}
+
+// terminated reports whether a string-type sequence ended the way it should.
+//
+// The parser hands back whatever it has when the input runs out, so a string
+// that stops mid-sequence still arrives here. Carrying an unterminated
+// introducer into a cell would be worse than dropping it: the terminal would
+// swallow everything painted after that cell, looking for an end that never
+// comes.
+func terminated[T []byte | string](seq T) bool {
+	n := len(seq)
+	if n == 0 {
+		return false
+	}
+	switch seq[n-1] {
+	case ansi.BEL: // an OSC may end with BEL instead
+		return true
+	case 0x9c: // C1 ST, a single byte
+		return true
+	case '\\':
+		return n >= 2 && seq[n-2] == ansi.ESC
+	}
+	return false
 }
 
 func printString[T []byte | string](

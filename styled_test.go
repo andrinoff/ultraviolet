@@ -557,3 +557,66 @@ func TestStyledStringCombiningMarks(t *testing.T) {
 		})
 	}
 }
+
+// A string-type sequence is only carried when it actually ended. The parser
+// hands back whatever it has when the input runs out, and an unterminated
+// introducer in a cell would swallow everything painted after it, looking for
+// an end that never comes.
+func TestPassThroughTerminators(t *testing.T) {
+	for name, tc := range map[string]struct {
+		input   string
+		carried bool
+	}{
+		"APC ends with ST":     {"\x1b_x\x1b\\a", true},
+		"APC ends with C1 ST":  {"\x1b_x\x9ca", true},
+		"C1 APC and C1 ST":     {"\x9fx\x9ca", true},
+		"OSC ends with BEL":    {"\x1b]0;t\x07a", true},
+		"OSC ends with ST":     {"\x1b]0;t\x1b\\a", true},
+		"DCS ends with ST":     {"\x1bP1$r0m\x1b\\a", true},
+		"SOS ends with ST":     {"\x1bXfoo\x1b\\a", true},
+		"PM ends with ST":      {"\x1b^bar\x1b\\a", true},
+		"APC never terminated": {"a\x1b_x", false},
+		"OSC never terminated": {"a\x1b]0;t", false},
+		"DCS never terminated": {"a\x1bP1$r0m", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ss := NewStyledString(tc.input)
+			area := ss.Bounds()
+			buf := NewScreenBuffer(area.Dx(), area.Dy())
+			ss.Draw(buf, area)
+
+			var content string
+			for x := 0; x < buf.Width(); x++ {
+				if c := buf.CellAt(x, 0); c != nil {
+					content += c.Content
+				}
+			}
+			// Every input above holds exactly one visible glyph, so anything
+			// beyond a single byte is the sequence riding along. Checked by
+			// length rather than by looking for an introducer, because a C1
+			// introducer is a lone 0x9f byte and not a rune any search would
+			// match.
+			if carried := len(content) > 1; carried != tc.carried {
+				t.Errorf("carried = %v, want %v (cells hold %q)", carried, tc.carried, content)
+			}
+		})
+	}
+}
+
+// A carried sequence must not change how wide its cell measures.
+// [lineHasDrift] works the width out from the content, so a sequence that
+// counted would have the renderer treat every line holding one as drift-prone
+// and repaint it whole.
+func TestPassThroughDoesNotAffectWidth(t *testing.T) {
+	ss := NewStyledString("\x1b_x\x1b\\abc")
+	area := ss.Bounds()
+	buf := NewScreenBuffer(area.Dx(), area.Dy())
+	ss.Draw(buf, area)
+
+	if c := buf.CellAt(0, 0); c == nil || c.Width != 1 {
+		t.Errorf("cell holding a sequence has width %v, want 1", c)
+	}
+	if lineHasDrift(ansi.WcWidth, buf.Line(0)) {
+		t.Error("a line holding a pass-through sequence was flagged drift-prone")
+	}
+}

@@ -1555,3 +1555,85 @@ func TestRendererNoWrapOnDriftLine(t *testing.T) {
 		t.Errorf("plain row should not touch autowrap, got: %q", narrow)
 	}
 }
+
+// The repaint a height change forces belongs to fullscreen mode and to actual
+// changes. Inline frames are shorter than the terminal by design, and a render
+// that resizes nothing has nothing to distrust.
+func TestHeightRepaintScope(t *testing.T) {
+	render := func(r *TerminalRenderer, w, h int, mark string) {
+		cb := NewRenderBuffer(w, h)
+		cb.SetCell(0, 0, &Cell{Content: mark, Width: 1})
+		r.Render(cb)
+		if err := r.Flush(); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+	}
+
+	t.Run("inline mode leaves the height alone", func(t *testing.T) {
+		var buf bytes.Buffer
+		r := NewTerminalRenderer(&buf, []string{"TERM=xterm-256color"})
+		r.SetRelativeCursor(true)
+		render(r, 10, 2, "a")
+		buf.Reset()
+		render(r, 10, 5, "a")
+		if strings.Contains(buf.String(), ansi.EraseEntireScreen) {
+			t.Errorf("inline mode repainted on a height change: %q", buf.String())
+		}
+	})
+
+	t.Run("a steady size does not repaint", func(t *testing.T) {
+		var buf bytes.Buffer
+		r := NewTerminalRenderer(&buf, []string{"TERM=xterm-256color"})
+		r.SetFullscreen(true)
+		render(r, 10, 3, "a")
+		buf.Reset()
+		render(r, 10, 3, "b")
+		if strings.Contains(buf.String(), ansi.EraseEntireScreen) {
+			t.Errorf("repainted without a resize: %q", buf.String())
+		}
+	})
+
+	t.Run("degenerate sizes do not panic", func(t *testing.T) {
+		for _, size := range [][2]int{{0, 0}, {10, 0}, {0, 5}, {1, 1}} {
+			var buf bytes.Buffer
+			r := NewTerminalRenderer(&buf, []string{"TERM=xterm-256color"})
+			r.SetFullscreen(true)
+			render(r, 10, 3, "a")
+			r.Resize(size[0], size[1])
+			r.Render(NewRenderBuffer(size[0], size[1]))
+			if err := r.Flush(); err != nil {
+				t.Fatalf("size %v: Flush: %v", size, err)
+			}
+		}
+	})
+}
+
+// A carried sequence has to reach the terminal, and only when its cell changes.
+// Re-sending it every frame would have an image protocol retransmit the image
+// at the frame rate.
+func TestPassThroughSequenceReachesTerminalOnce(t *testing.T) {
+	const apc = "\x1b_Ga=T\x1b\\"
+
+	var buf bytes.Buffer
+	r := NewTerminalRenderer(&buf, []string{"TERM=xterm-256color"})
+	r.SetFullscreen(true)
+
+	scr := NewScreenBuffer(10, 2)
+	NewStyledString(apc+"hi").Draw(scr, Rect(0, 0, 10, 1))
+	r.Render(scr.RenderBuffer)
+	if err := r.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if n := strings.Count(buf.String(), apc); n != 1 {
+		t.Errorf("first render sent the sequence %d times, want 1: %q", n, buf.String())
+	}
+
+	buf.Reset()
+	r.Render(scr.RenderBuffer)
+	if err := r.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if n := strings.Count(buf.String(), apc); n != 0 {
+		t.Errorf("an unchanged render re-sent the sequence %d times: %q", n, buf.String())
+	}
+}
