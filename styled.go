@@ -98,6 +98,26 @@ func (s *StyledString) Bounds() Rectangle {
 
 // printString draws a string starting at the given position. If s is nil, it
 // will build and return a slice of [Line]s instead (unwrapped, ignoring bounds).
+// passThrough reports whether a zero-width sequence should be carried in a
+// cell's content and replayed to the terminal, rather than dropped.
+//
+// The string-type sequences (APC, DCS, SOS, PM) and OSC carry data rather than
+// drive the cursor: image protocols, window titles, clipboard writes. An
+// application that puts one in its view means it to reach the terminal, and a
+// cell carrying one still advances by its own width, so the renderer's column
+// model still holds.
+//
+// Everything else is dropped, as it was before. A CSI can move the cursor or
+// erase part of the screen and an ESC Fs sequence can reset the terminal
+// outright. Replaying one from inside a cell would move the real cursor
+// somewhere the model cannot see, which is the drift a cell buffer exists to
+// keep out.
+func passThrough[T []byte | string](seq T) bool {
+	return ansi.HasApcPrefix(seq) || ansi.HasDcsPrefix(seq) ||
+		ansi.HasSosPrefix(seq) || ansi.HasPmPrefix(seq) ||
+		ansi.HasOscPrefix(seq)
+}
+
 func printString[T []byte | string](
 	s Screen,
 	m WidthMethod,
@@ -129,6 +149,7 @@ func printString[T []byte | string](
 	var link Link
 	var state byte
 	lastX, lastY := -1, -1 // last cell written, for folding in combining marks
+	var pending string     // pass-through sequences awaiting a cell to ride on
 	for len(str) > 0 {
 		seq, width, n, newState := decoder(str, state, p)
 		// The decoder's ASCII fast path doesn't check for trailing combining
@@ -148,6 +169,14 @@ func printString[T []byte | string](
 		case width > 0:
 			cell.Width = width
 			cell.Content = string(seq)
+			// Any pass-through sequences seen since the last cell belong in
+			// front of this glyph, the order they arrived in. Checked rather
+			// than concatenated unconditionally, because there are none at all
+			// on the overwhelmingly common path and the join is not free.
+			if pending != "" {
+				cell.Content = pending + cell.Content
+				pending = ""
+			}
 			cell.Style = style
 			cell.Link = link
 
@@ -232,8 +261,8 @@ func printString[T []byte | string](
 						s.SetCell(lastX, lastY, &folded)
 					}
 				}
-			default:
-				cell.Content += string(seq)
+			case passThrough(seq):
+				pending += string(seq)
 			}
 		}
 
@@ -245,6 +274,26 @@ func printString[T []byte | string](
 			// We've reached the bottom of the bounds, stop processing further
 			// lines.
 			break
+		}
+	}
+
+	// Pass-through sequences left at the end of the string have no glyph to
+	// ride in front of, so fold them into the last cell written instead. The
+	// alternative is a width-0 cell one past the content, which lands outside
+	// the bounds whenever the string filled them.
+	if pending != "" {
+		if s == nil {
+			if lastY >= 0 && lastY < len(lines) && lastX >= 0 && lastX < len(lines[lastY]) {
+				lines[lastY][lastX].Content += pending
+				pending = ""
+			}
+		} else if lastX >= 0 {
+			if prev := s.CellAt(lastX, lastY); prev != nil {
+				folded := *prev
+				folded.Content += pending
+				s.SetCell(lastX, lastY, &folded)
+				pending = ""
+			}
 		}
 	}
 

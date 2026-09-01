@@ -377,6 +377,59 @@ func TestStyledString(t *testing.T) {
 				},
 			},
 		},
+		{
+			// A sequence that carries data rather than driving the cursor
+			// rides in the content of the cell that follows it, so it reaches
+			// the terminal when the cell is painted. See #95.
+			name:           "APC sequence rides the next cell",
+			input:          "\x1b_foo\x1b\\bar",
+			expectedWidth:  3,
+			expectedHeight: 1,
+			expected: &Buffer{
+				Lines: []Line{
+					{
+						newWcCell("\x1b_foo\x1b\\b", nil, nil),
+						newWcCell("a", nil, nil),
+						newWcCell("r", nil, nil),
+					},
+				},
+			},
+		},
+		{
+			// At the end of the string there is no following cell, so it folds
+			// into the last one. A width-0 cell one past the content would sit
+			// outside the bounds whenever the string filled them.
+			name:           "trailing APC folds into the last cell",
+			input:          "bar\x1b_foo\x1b\\",
+			expectedWidth:  3,
+			expectedHeight: 1,
+			expected: &Buffer{
+				Lines: []Line{
+					{
+						newWcCell("b", nil, nil),
+						newWcCell("a", nil, nil),
+						newWcCell("r\x1b_foo\x1b\\", nil, nil),
+					},
+				},
+			},
+		},
+		{
+			// Cursor movement is not carried. Replaying it from inside a cell
+			// would move the real cursor somewhere the renderer's model cannot
+			// see, so it stays dropped.
+			name:           "cursor movement is not carried",
+			input:          "a\x1b[5Cb",
+			expectedWidth:  2,
+			expectedHeight: 1,
+			expected: &Buffer{
+				Lines: []Line{
+					{
+						newWcCell("a", nil, nil),
+						newWcCell("b", nil, nil),
+					},
+				},
+			},
+		},
 	}
 
 	for i, tc := range cases {
