@@ -123,7 +123,16 @@ func (g *ghosttyOracle) Row(t *testing.T, y int) string {
 
 	var b strings.Builder
 	for x := range g.w {
-		b.WriteString(g.CellAt(t, x, y))
+		cell := g.CellAt(t, x, y)
+		if cell == "" {
+			// A cell that was erased reports no codepoint, while a cell
+			// someone wrote a space into reports one. They look the same on
+			// screen and mean the same thing, so read them back the same way.
+			// Otherwise a row painted by erasing compares unequal to the same
+			// row painted with spaces.
+			cell = " "
+		}
+		b.WriteString(cell)
 	}
 
 	// Empty cells read back as NUL rather than a space, so trim both.
