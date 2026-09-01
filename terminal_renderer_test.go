@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestSimpleRendererOutput(t *testing.T) {
@@ -1479,5 +1480,74 @@ func TestRendererGrowPaintsNewRows(t *testing.T) {
 	expected := "\x1b[6;1HZ"
 	if output := buf.String(); output != expected {
 		t.Errorf("expected output after grow to be %q, got: %q", expected, output)
+	}
+}
+
+// A fullscreen shrink scrolls the terminal to keep the cursor visible, moving
+// every row the model has an opinion about. The next render has to repaint
+// rather than diff against a model the terminal moved underneath it, and
+// growing back does not undo the move.
+//
+// [TerminalRenderer.Render] catches a shrink it can see in the buffer
+// dimensions. This one it cannot: the screen shrinks and grows back with no
+// render in between, so only the resize itself can report it.
+func TestRendererFullscreenShrinkRepaints(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewTerminalRenderer(&buf, []string{"TERM=xterm-256color"})
+	r.SetFullscreen(true)
+	r.Resize(10, 4)
+
+	cellbuf := NewRenderBuffer(10, 4)
+	cellbuf.SetCell(0, 2, &Cell{Content: "a", Width: 1})
+	r.Render(cellbuf)
+	if err := r.Flush(); err != nil {
+		t.Fatalf("failed to flush renderer: %v", err)
+	}
+	buf.Reset()
+
+	r.Resize(10, 2)
+	r.Resize(10, 4)
+	r.Render(cellbuf)
+	if err := r.Flush(); err != nil {
+		t.Fatalf("failed to flush renderer: %v", err)
+	}
+
+	if out := buf.String(); !strings.Contains(out, ansi.EraseEntireScreen) {
+		t.Errorf("shrink should force a repaint, got: %q", out)
+	}
+}
+
+// A drift-prone line is painted with autowrap off. A terminal that measures a
+// cluster wider than the model does would otherwise run past the right margin,
+// spilling the line onto the next row, or scrolling the whole screen when the
+// line is the last one. Neither shows up in the model, so the residue outlives
+// every later frame.
+func TestRendererNoWrapOnDriftLine(t *testing.T) {
+	render := func(content string, width, y int) string {
+		var buf bytes.Buffer
+		r := NewTerminalRenderer(&buf, []string{"TERM=xterm-256color"})
+		r.SetFullscreen(true)
+		r.Resize(width, 2)
+
+		scr := NewScreenBuffer(width, 2)
+		NewStyledString(content).Draw(scr, Rect(0, y, width, 1))
+		r.Render(scr.RenderBuffer)
+		if err := r.Flush(); err != nil {
+			t.Fatalf("failed to flush renderer: %v", err)
+		}
+		return buf.String()
+	}
+
+	for _, y := range []int{0, 1} {
+		wide := render("世界", 6, y)
+		if !strings.Contains(wide, ansi.ResetModeAutoWrap) || !strings.Contains(wide, ansi.SetModeAutoWrap) {
+			t.Errorf("drift-prone row %d should paint with autowrap off, got: %q", y, wide)
+		}
+	}
+
+	// A row of plain cells cannot overflow, so it pays nothing.
+	narrow := render("abc", 6, 1)
+	if strings.Contains(narrow, ansi.ResetModeAutoWrap) {
+		t.Errorf("plain row should not touch autowrap, got: %q", narrow)
 	}
 }
