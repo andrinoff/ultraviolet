@@ -1386,7 +1386,12 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 		// fullscreen, where the renderer owns every cell it is about to
 		// clear. Inline mode shares the screen with whatever came before,
 		// so it uses the narrower partial clear below instead.
-		if s.flags.Contains(tFullscreen) && (newWidth < curWidth || newHeight < curHeight) {
+		// A shrink makes the terminal reflow. A height grow is no safer: the
+		// terminal fills the rows it gains from its scrollback, and an earlier
+		// shrink may have rewrapped a row too wide to fit into exactly that
+		// space. Those lines come back at the top and push the screen down, so
+		// no row keeps its meaning and there is nothing to diff against.
+		if s.flags.Contains(tFullscreen) && (newWidth < curWidth || newHeight != curHeight) {
 			s.clear = true
 		}
 	}

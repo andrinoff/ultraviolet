@@ -77,23 +77,6 @@ before any mutation starts.
 Add to it rather than pruning it. When a nightly run fails, download the
 `crashers-*` artifact and commit the new file alongside the fix.
 
-## A known gap
-
-One class of failure is not in the corpus, because it has no fix yet and the
-`test` job has to stay green: a narrow shrink followed by a grow.
-
-Shrinking the screen makes the terminal rewrap a row too wide to fit, which can
-push content onto rows that are off-screen at the time. Growing the screen
-brings those rows back, still holding it. The renderer's model never painted
-them and has no record to repair, so the residue survives every later frame.
-Forcing a full repaint on any resize would cover it, at roughly double the cost
-of `BenchmarkRenderResize`; repainting only the rows the model knows are
-drift-prone, which is what happens today, does not reach rows it never owned.
-
-The nightly run rediscovers this regularly. Programs that resize twice with no
-render in between, around content wider than the screen, are this and not a new
-bug.
-
 [libghostty]: https://github.com/mitchellh/go-libghostty
 [x/vt]: https://github.com/charmbracelet/x/tree/main/vt
 [zig]: https://ghostty.org/docs/install/build

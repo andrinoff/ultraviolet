@@ -1455,6 +1455,10 @@ func TestRendererInlineShrinkClearsPartially(t *testing.T) {
 // Rows added by a grow have to be diffed like any other. The model is resized
 // before the diff loop runs so the loop walks them; otherwise content drawn
 // into a new row never reaches the terminal.
+//
+// The grow repaints the screen rather than diffing it. The terminal fills rows
+// it gains from its own scrollback, and those lines arrive at the top and push
+// the rest down, so no row keeps its meaning across the resize.
 func TestRendererGrowPaintsNewRows(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewTerminalRenderer(&buf, []string{"TERM=xterm-256color"})
@@ -1477,7 +1481,7 @@ func TestRendererGrowPaintsNewRows(t *testing.T) {
 		t.Fatalf("failed to flush renderer: %v", err)
 	}
 
-	expected := "\x1b[6;1HZ"
+	expected := "\x1b[H\x1b[2JA\r\x1b[6dZ"
 	if output := buf.String(); output != expected {
 		t.Errorf("expected output after grow to be %q, got: %q", expected, output)
 	}
