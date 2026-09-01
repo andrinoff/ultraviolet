@@ -558,26 +558,37 @@ func TestStyledStringCombiningMarks(t *testing.T) {
 	}
 }
 
-// A string-type sequence is only carried when it actually ended. The parser
-// hands back whatever it has when the input runs out, and an unterminated
-// introducer in a cell would swallow everything painted after it, looking for
-// an end that never comes.
+// A string-type sequence is only carried when it actually ended, and only when
+// it is one of the kinds a cell has any business replaying.
 func TestPassThroughTerminators(t *testing.T) {
 	for name, tc := range map[string]struct {
 		input   string
 		carried bool
 	}{
-		"APC ends with ST":     {"\x1b_x\x1b\\a", true},
-		"APC ends with C1 ST":  {"\x1b_x\x9ca", true},
-		"C1 APC and C1 ST":     {"\x9fx\x9ca", true},
-		"OSC ends with BEL":    {"\x1b]0;t\x07a", true},
-		"OSC ends with ST":     {"\x1b]0;t\x1b\\a", true},
-		"DCS ends with ST":     {"\x1bP1$r0m\x1b\\a", true},
-		"SOS ends with ST":     {"\x1bXfoo\x1b\\a", true},
-		"PM ends with ST":      {"\x1b^bar\x1b\\a", true},
+		"APC ends with ST": {"\x1b_x\x1b\\a", true},
+		"DCS ends with ST": {"\x1bP1$r0m\x1b\\a", true},
+		"SOS ends with ST": {"\x1bXfoo\x1b\\a", true},
+		"PM ends with ST":  {"\x1b^bar\x1b\\a", true},
+
+		// The parser returns what it has when the input runs out. An
+		// unterminated introducer in a cell would have the terminal swallow
+		// everything painted after it.
 		"APC never terminated": {"a\x1b_x", false},
 		"OSC never terminated": {"a\x1b]0;t", false},
 		"DCS never terminated": {"a\x1bP1$r0m", false},
+
+		// 0x9c is a UTF-8 continuation byte as well as C1 ST, so a sequence
+		// that ran out partway through a character can end in a byte that
+		// looks like a terminator. U+071C encodes as dc 9c.
+		"APC cut off mid-character": {"a\x1b_x\u071c", false},
+		"OSC cut off mid-character": {"a\x1b]0;\u071c", false},
+		"APC ends with C1 ST":       {"\x1b_x\x9ca", false},
+
+		// An OSC carries data but a cell is painted again on every repaint. A
+		// title survives that; a clipboard write or a notification should not
+		// fire again on each resize.
+		"OSC ends with BEL": {"\x1b]0;t\x07a", false},
+		"OSC ends with ST":  {"\x1b]0;t\x1b\\a", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ss := NewStyledString(tc.input)
@@ -591,12 +602,9 @@ func TestPassThroughTerminators(t *testing.T) {
 					content += c.Content
 				}
 			}
-			// Every input above holds exactly one visible glyph, so anything
-			// beyond a single byte is the sequence riding along. Checked by
-			// length rather than by looking for an introducer, because a C1
-			// introducer is a lone 0x9f byte and not a rune any search would
-			// match.
-			if carried := len(content) > 1; carried != tc.carried {
+			// Every input above introduces its sequence with ESC, so an ESC
+			// surviving into the cells is the sequence riding along.
+			if carried := strings.ContainsRune(content, ansi.ESC); carried != tc.carried {
 				t.Errorf("carried = %v, want %v (cells hold %q)", carried, tc.carried, content)
 			}
 		})

@@ -1637,3 +1637,43 @@ func TestPassThroughSequenceReachesTerminalOnce(t *testing.T) {
 		t.Errorf("an unchanged render re-sent the sequence %d times: %q", n, buf.String())
 	}
 }
+
+// The ASCII short-circuit in lineHasDrift must never change its answer.
+// Compare against the unoptimised definition over everything the conformance
+// fuzzer can draw, plus every single byte.
+func TestDriftShortCircuitAgreesWithFullCheck(t *testing.T) {
+	full := func(m ansi.Method, c *Cell) bool {
+		return c.Width > 1 || m.StringWidth(c.Content) != ansi.StringWidth(c.Content)
+	}
+
+	var contents []string
+	for b := 0; b < 256; b++ {
+		contents = append(contents, string([]byte{byte(b)}))
+	}
+	contents = append(contents,
+		"a", "\u4e16", "\uac00", "\U0001fae0", "e\u0301", "n\u0303",
+		"\u2639\ufe0e", "\u2639\ufe0f", "\u2764\ufe0f", "\u2708\ufe0f",
+		"\U0001f469\u200d\U0001f4bb", "\U0001f426\u200d\U0001f525",
+		"\U0001f44d\U0001f3fd", "\U0001f44b\U0001f3ff",
+		"\u26d3\ufe0f\u200d\U0001f4a5", "\U0001f1fa", "\U0001f1fa\U0001f1f8",
+		"\U0001f1ef\U0001f1f5", "1\ufe0f\u20e3", "", " ", "\x1b_x\x1b\\a",
+	)
+
+	for _, m := range []ansi.Method{ansi.WcWidth, ansi.GraphemeWidth} {
+		for _, content := range contents {
+			for _, w := range []int{0, 1, 2} {
+				c := &Cell{Content: content, Width: w}
+				line := Line{*c}
+				got := lineHasDrift(m, line)
+				want := false
+				if c.Width != 0 && len(c.Content) != 0 {
+					want = full(m, c)
+				}
+				if got != want {
+					t.Errorf("method=%v content=%q width=%d: short-circuit says %v, full check says %v",
+						m, content, w, got, want)
+				}
+			}
+		}
+	}
+}

@@ -101,47 +101,48 @@ func (s *StyledString) Bounds() Rectangle {
 // passThrough reports whether a zero-width sequence should be carried in a
 // cell's content and replayed to the terminal, rather than dropped.
 //
-// The string-type sequences (APC, DCS, SOS, PM) and OSC carry data rather than
-// drive the cursor: image protocols, window titles, clipboard writes. An
-// application that puts one in its view means it to reach the terminal, and a
-// cell carrying one still advances by its own width, so the renderer's column
+// The string-type sequences carry private data rather than driving the cursor:
+// APC for image protocols, DCS for device control, SOS and PM for whatever an
+// application agrees with its terminal. One means it to reach the terminal, and
+// a cell carrying one still advances by its own width, so the renderer's column
 // model still holds.
 //
-// Everything else is dropped, as it was before. A CSI can move the cursor or
-// erase part of the screen and an ESC Fs sequence can reset the terminal
-// outright. Replaying one from inside a cell would move the real cursor
-// somewhere the model cannot see, which is the drift a cell buffer exists to
-// keep out.
+// Everything else is dropped, as it was before:
+//
+//   - A CSI can move the cursor or erase part of the screen, and an ESC Fs
+//     sequence can reset the terminal outright. Replaying one from inside a
+//     cell would move the real cursor somewhere the model cannot see, which is
+//     the drift a cell buffer exists to keep out.
+//   - An OSC is dropped despite carrying data, because a cell is painted again
+//     every time it changes and on every full repaint. A window title survives
+//     that, but a clipboard write (OSC 52) or a notification (OSC 9) is not
+//     something to fire again on each resize. Hyperlinks, the one OSC a cell
+//     has a place for, are read into [Link] above.
 func passThrough[T []byte | string](seq T) bool {
 	if !ansi.HasApcPrefix(seq) && !ansi.HasDcsPrefix(seq) &&
-		!ansi.HasSosPrefix(seq) && !ansi.HasPmPrefix(seq) &&
-		!ansi.HasOscPrefix(seq) {
+		!ansi.HasSosPrefix(seq) && !ansi.HasPmPrefix(seq) {
 		return false
 	}
 	return terminated(seq)
 }
 
-// terminated reports whether a string-type sequence ended the way it should.
+// terminated reports whether a string-type sequence ended with ST.
 //
 // The parser hands back whatever it has when the input runs out, so a string
 // that stops mid-sequence still arrives here. Carrying an unterminated
 // introducer into a cell would be worse than dropping it: the terminal would
 // swallow everything painted after that cell, looking for an end that never
 // comes.
+//
+// Only the two-byte ST is accepted. The one-byte C1 form, 0x9c, is also a
+// UTF-8 continuation byte, so a sequence that ran out partway through a
+// character such as U+071C ("\u071c", encoded dc 9c) ends in a byte
+// indistinguishable from a terminator. The parser and the terminal need not
+// resolve that ambiguity the same way, and guessing wrong reintroduces exactly
+// the swallowing this guards against.
 func terminated[T []byte | string](seq T) bool {
 	n := len(seq)
-	if n == 0 {
-		return false
-	}
-	switch seq[n-1] {
-	case ansi.BEL: // an OSC may end with BEL instead
-		return true
-	case 0x9c: // C1 ST, a single byte
-		return true
-	case '\\':
-		return n >= 2 && seq[n-2] == ansi.ESC
-	}
-	return false
+	return n >= 2 && seq[n-1] == '\\' && seq[n-2] == ansi.ESC
 }
 
 func printString[T []byte | string](
@@ -175,7 +176,7 @@ func printString[T []byte | string](
 	var link Link
 	var state byte
 	lastX, lastY := -1, -1 // last cell written, for folding in combining marks
-	var pending string     // pass-through sequences awaiting a cell to ride on
+	var pending []byte     // pass-through sequences awaiting a cell to ride on
 	for len(str) > 0 {
 		seq, width, n, newState := decoder(str, state, p)
 		// The decoder's ASCII fast path doesn't check for trailing combining
@@ -197,11 +198,12 @@ func printString[T []byte | string](
 			cell.Content = string(seq)
 			// Any pass-through sequences seen since the last cell belong in
 			// front of this glyph, the order they arrived in. Checked rather
-			// than concatenated unconditionally, because there are none at all
-			// on the overwhelmingly common path and the join is not free.
-			if pending != "" {
-				cell.Content = pending + cell.Content
-				pending = ""
+			// than joined unconditionally, because there are none at all on the
+			// overwhelmingly common path and the join is not free.
+			if len(pending) > 0 {
+				pending = append(pending, cell.Content...)
+				cell.Content = string(pending)
+				pending = pending[:0]
 			}
 			cell.Style = style
 			cell.Link = link
@@ -288,7 +290,7 @@ func printString[T []byte | string](
 					}
 				}
 			case passThrough(seq):
-				pending += string(seq)
+				pending = append(pending, string(seq)...)
 			}
 		}
 
@@ -307,18 +309,16 @@ func printString[T []byte | string](
 	// ride in front of, so fold them into the last cell written instead. The
 	// alternative is a width-0 cell one past the content, which lands outside
 	// the bounds whenever the string filled them.
-	if pending != "" {
+	if len(pending) > 0 {
 		if s == nil {
 			if lastY >= 0 && lastY < len(lines) && lastX >= 0 && lastX < len(lines[lastY]) {
-				lines[lastY][lastX].Content += pending
-				pending = ""
+				lines[lastY][lastX].Content += string(pending)
 			}
 		} else if lastX >= 0 {
 			if prev := s.CellAt(lastX, lastY); prev != nil {
 				folded := *prev
-				folded.Content += pending
+				folded.Content += string(pending)
 				s.SetCell(lastX, lastY, &folded)
-				pending = ""
 			}
 		}
 	}

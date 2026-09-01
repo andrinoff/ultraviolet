@@ -834,7 +834,17 @@ func lineHasDrift(m ansi.Method, line Line) bool {
 		if c == nil || c.Width == 0 || len(c.Content) == 0 {
 			continue
 		}
-		if c.Width > 1 || m.StringWidth(c.Content) != ansi.StringWidth(c.Content) {
+		if c.Width > 1 {
+			return true
+		}
+		// One printable ASCII byte is one column under every width model, so
+		// it can never be a cell the models disagree about. Worth saying out
+		// loud because working the width out means segmenting the content,
+		// and this runs for every cell of every line the renderer diffs.
+		if len(c.Content) == 1 && c.Content[0] >= 0x20 && c.Content[0] < 0x7f {
+			continue
+		}
+		if m.StringWidth(c.Content) != ansi.StringWidth(c.Content) {
 			return true
 		}
 	}
