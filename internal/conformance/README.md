@@ -77,18 +77,6 @@ before any mutation starts.
 Add to it rather than pruning it. When a nightly run fails, download the
 `crashers-*` artifact and commit the new file alongside the fix.
 
-One kind of failure does not belong in it. x/vt drops a combining mark from the
-last cell it wrote when an erase follows, so a row the renderer paints correctly
-reads back short:
-
-	"\r" + "e\u0301"            both emulators read back "e\u0301"
-	"\r" + "e\u0301" + "\x1b[K"  ghostty reads "e\u0301", x/vt reads "e"
-
-The renderer's output is the same either way and ghostty agrees with it, so
-there is nothing here to fix on this side. charmbracelet/x#962 fixes the
-emulator; until it lands and the dependency moves, a fuzz run that finds this
-has found that bug, not a renderer bug.
-
 [libghostty]: https://github.com/mitchellh/go-libghostty
 [x/vt]: https://github.com/charmbracelet/x/tree/main/vt
 [zig]: https://ghostty.org/docs/install/build
